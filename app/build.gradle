@@ -15,8 +15,15 @@ android {
     buildTypes {
         release {
             minifyEnabled false
-            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
         }
+    }
+}
+
+configurations.all {
+    resolutionStrategy {
+        force 'org.jetbrains.kotlin:kotlin-stdlib:1.9.0'
+        force 'org.jetbrains.kotlin:kotlin-stdlib-jdk7:1.9.0'
+        force 'org.jetbrains.kotlin:kotlin-stdlib-jdk8:1.9.0'
     }
 }
 
@@ -26,12 +33,4 @@ dependencies {
     implementation 'com.google.android.material:material:1.9.0'
     implementation 'androidx.lifecycle:lifecycle-runtime:2.6.2'
     implementation 'androidx.lifecycle:lifecycle-service:2.6.2'
-    constraints {
-        implementation("org.jetbrains.kotlin:kotlin-stdlib-jdk7:1.8.10") {
-            because "kotlin-stdlib-jdk7 is now part of kotlin-stdlib"
-        }
-        implementation("org.jetbrains.kotlin:kotlin-stdlib-jdk8:1.8.10") {
-            because "kotlin-stdlib-jdk8 is now part of kotlin-stdlib"
-        }
-    }
 }
