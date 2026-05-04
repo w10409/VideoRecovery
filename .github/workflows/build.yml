@@ -23,6 +23,12 @@ jobs:
     - name: Set up Android SDK
       uses: android-actions/setup-android@v3
 
+    - name: Create local.properties
+      run: |
+        echo "sdk.dir=$ANDROID_HOME" > local.properties
+        echo "sdk.dir=$ANDROID_HOME" >> $GITHUB_PATH
+        cat local.properties
+
     - name: Cache Gradle packages
       uses: actions/cache@v4
       with:
@@ -32,9 +38,6 @@ jobs:
 
     - name: Build with Gradle
       run: gradle assembleDebug --no-daemon
-      env:
-        ANDROID_HOME: /opt/android-sdk
-        ANDROID_SDK_ROOT: /opt/android-sdk
 
     - name: Upload APK
       uses: actions/upload-artifact@v4
