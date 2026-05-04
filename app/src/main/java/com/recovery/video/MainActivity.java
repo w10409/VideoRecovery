@@ -18,8 +18,6 @@ import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.content.ContextCompat;
 
 public class MainActivity extends AppCompatActivity {
-    private static final int REQUEST_PERMISSION = 100;
-
     private ActivityResultLauncher<Intent> manageStorageLauncher;
     private ActivityResultLauncher<String> permissionLauncher;
 
@@ -80,7 +78,8 @@ public class MainActivity extends AppCompatActivity {
             startService(serviceIntent);
         }
         showToast("开始扫描...");
-        finish();
+        // 不要finish()，保持在前台显示扫描状态
+        updateStatus("正在扫描...");
     }
 
     private void showToast(String msg) {
