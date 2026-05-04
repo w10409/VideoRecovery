@@ -31,7 +31,10 @@ jobs:
         restore-keys: ${{ runner.os }}-gradle-
 
     - name: Build with Gradle
-      run: ./gradlew assembleDebug
+      run: gradle assembleDebug --no-daemon
+      env:
+        ANDROID_HOME: /opt/android-sdk
+        ANDROID_SDK_ROOT: /opt/android-sdk
 
     - name: Upload APK
       uses: actions/upload-artifact@v4
