@@ -14,6 +14,7 @@ import android.net.Uri;
 import android.os.Build;
 import android.os.Environment;
 import android.os.IBinder;
+import android.os.storage.StorageManager;
 import android.provider.MediaStore;
 import android.util.Log;
 import androidx.core.app.NotificationCompat;
@@ -21,6 +22,7 @@ import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
+import java.lang.reflect.Method;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Date;
@@ -40,21 +42,30 @@ public class RecoveryService extends Service {
     @Override
     public void onCreate() {
         super.onCreate();
+        Log.d(TAG, "RecoveryService onCreate");
         notificationManager = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
         createNotificationChannel();
     }
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
+        Log.d(TAG, "RecoveryService onStartCommand");
         if (!isScanning) {
             isScanning = true;
-            startForeground(1, buildNotification("正在扫描...", 0));
-            new Thread(this::scanForDeletedVideos).start();
+            try {
+                startForeground(1, buildNotification("正在扫描...", 0));
+                new Thread(this::scanForDeletedVideos).start();
+            } catch (Exception e) {
+                Log.e(TAG, "Failed to start scanning", e);
+                showCompletionNotification(-1);
+                stopSelf();
+            }
         }
         return START_STICKY;
     }
 
     private void scanForDeletedVideos() {
+        Log.d(TAG, "scanForDeletedVideos started");
         Set<String> existingVideos = null;
         Set<String> allFiles = null;
 
@@ -90,6 +101,7 @@ public class RecoveryService extends Service {
 
             saveRecoveredFiles(recoveredFiles);
             int finalCount = recoveredFiles.size();
+            Log.d(TAG, "Scan complete. Recovered: " + finalCount);
             showCompletionNotification(finalCount);
 
         } catch (Exception e) {
@@ -126,6 +138,7 @@ public class RecoveryService extends Service {
 
     private Set<String> scanAllStorageFiles() {
         Set<String> files = new HashSet<>();
+        Log.d(TAG, "scanAllStorageFiles started");
 
         // Get external storage directory in a compatible way
         File storageRoot = Environment.getExternalStorageDirectory();
@@ -134,7 +147,7 @@ public class RecoveryService extends Service {
             scanDirectory(storageRoot, files, 0);
         }
 
-        // Also scan external storage directories
+        // Also scan external storage directories using getExternalFilesDirs
         File[] externalDirs = getExternalFilesDirs(null);
         if (externalDirs != null) {
             for (File dir : externalDirs) {
@@ -148,6 +161,21 @@ public class RecoveryService extends Service {
             }
         }
 
+        // Try alternative storage paths for Huawei devices
+        String[] altPaths = {
+            "/storage/emulated/0",
+            "/sdcard",
+            "/mnt/sdcard"
+        };
+        for (String path : altPaths) {
+            File f = new File(path);
+            if (f.exists() && f.canRead() && !f.getAbsolutePath().equals(storageRoot.getAbsolutePath())) {
+                Log.d(TAG, "Scanning alternative: " + path);
+                scanDirectory(f, files, 0);
+            }
+        }
+
+        Log.d(TAG, "Total files found: " + files.size());
         return files;
     }
 
@@ -304,6 +332,7 @@ public class RecoveryService extends Service {
     @Override
     public void onDestroy() {
         super.onDestroy();
+        Log.d(TAG, "RecoveryService onDestroy");
         if (screenOffReceiver != null) {
             unregisterReceiver(screenOffReceiver);
         }
