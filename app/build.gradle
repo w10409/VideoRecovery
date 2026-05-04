@@ -1,0 +1,41 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace 'com.recovery.video'
+    compileSdk 35
+    defaultConfig {
+        applicationId "com.recovery.video"
+        minSdk 24
+        targetSdk 35
+        versionCode 1
+        versionName "1.0"
+    }
+    signingConfigs {
+        release {
+            storeFile file("keystore.jks")
+            storePassword System.getenv("KEYSTORE_PASSWORD") ?: "VideoRecovery123"
+            keyAlias System.getenv("KEY_ALIAS") ?: "video-recovery"
+            keyPassword System.getenv("KEY_PASSWORD") ?: "VideoRecovery123"
+        }
+    }
+    buildTypes {
+        release {
+            minifyEnabled false
+            signingConfig signingConfigs.release
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+        }
+        debug {
+            minifyEnabled false
+        }
+    }
+}
+
+dependencies {
+    implementation 'androidx.appcompat:appcompat:1.7.0'
+    implementation 'androidx.recyclerview:recyclerview:1.3.2'
+    implementation 'com.google.android.material:material:1.12.0'
+    implementation 'androidx.lifecycle:lifecycle-runtime:2.8.0'
+    implementation 'androidx.lifecycle:lifecycle-service:2.8.0'
+}
