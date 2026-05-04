@@ -13,7 +13,6 @@ import android.database.Cursor;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Environment;
-import android.os.FileObserver;
 import android.os.IBinder;
 import android.provider.MediaStore;
 import android.util.Log;
@@ -22,11 +21,8 @@ import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
-import java.io.RandomAccessFile;
-import java.nio.channels.FileChannel;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Date;
 import java.util.HashSet;
 import java.util.List;
@@ -38,7 +34,6 @@ public class RecoveryService extends Service {
 
     private NotificationManager notificationManager;
     private boolean isScanning = false;
-    private int progress = 0;
 
     private BroadcastReceiver screenOffReceiver;
 
@@ -47,7 +42,6 @@ public class RecoveryService extends Service {
         super.onCreate();
         notificationManager = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
         createNotificationChannel();
-        registerScreenOffReceiver();
     }
 
     @Override
@@ -60,40 +54,43 @@ public class RecoveryService extends Service {
         return START_STICKY;
     }
 
-    private void registerScreenOffReceiver() {
-        screenOffReceiver = new BroadcastReceiver() {
-            @Override
-            public void onReceive(Context context, Intent intent) {
-                if (Intent.ACTION_SCREEN_OFF.equals(intent.getAction())) {
-                    Log.d(TAG, "Screen off - keeping service alive");
-                }
-            }
-        };
-        IntentFilter filter = new IntentFilter(Intent.ACTION_SCREEN_OFF);
-        registerReceiver(screenOffReceiver, filter);
-    }
-
     private void scanForDeletedVideos() {
+        Set<String> existingVideos = null;
+        Set<String> allFiles = null;
+
         try {
-            Set<String> existingVideos = getExistingVideos();
-            Set<String> allFiles = scanAllStorageFiles();
+            existingVideos = getExistingVideos();
+            allFiles = scanAllStorageFiles();
 
             Set<String> deletedFiles = new HashSet<>(allFiles);
-            deletedFiles.removeAll(existingVideos);
+            if (existingVideos != null) {
+                deletedFiles.removeAll(existingVideos);
+            }
 
-            Log.d(TAG, "Found " + deletedFiles.size() + " potentially deleted videos");
+            Log.d(TAG, "All files found: " + allFiles.size() + ", Existing in MediaStore: " + (existingVideos != null ? existingVideos.size() : 0));
+            Log.d(TAG, "Potentially deleted videos: " + deletedFiles.size());
+
+            // Also scan recycle bin directories
+            scanRecycleBin(deletedFiles);
 
             List<String> recoveredFiles = new ArrayList<>();
+            int total = deletedFiles.size();
+            int count = 0;
+
             for (String file : deletedFiles) {
+                count++;
+                int progress = (count * 100) / Math.max(total, 1);
+                updateNotification("已恢复 " + recoveredFiles.size() + " 个文件", progress);
+
                 if (recoverFile(file)) {
                     recoveredFiles.add(file);
+                    Log.d(TAG, "Recovered: " + file);
                 }
-                progress = (recoveredFiles.size() * 100) / deletedFiles.size();
-                updateNotification("已恢复 " + recoveredFiles.size() + " 个文件", progress);
             }
 
             saveRecoveredFiles(recoveredFiles);
-            showCompletionNotification(recoveredFiles.size());
+            int finalCount = recoveredFiles.size();
+            showCompletionNotification(finalCount);
 
         } catch (Exception e) {
             Log.e(TAG, "Scan error", e);
@@ -107,58 +104,94 @@ public class RecoveryService extends Service {
 
     private Set<String> getExistingVideos() {
         Set<String> videos = new HashSet<>();
-        String[] projection = { MediaStore.Video.Media.DATA };
-        Cursor cursor = getContentResolver().query(
-            MediaStore.Video.Media.EXTERNAL_CONTENT_URI,
-            projection, null, null, null
-        );
-        if (cursor != null) {
-            int dataCol = cursor.getColumnIndexOrThrow(MediaStore.Video.Media.DATA);
-            while (cursor.moveToNext()) {
-                videos.add(cursor.getString(dataCol));
+        try {
+            String[] projection = { MediaStore.Video.Media.DATA };
+            Cursor cursor = getContentResolver().query(
+                MediaStore.Video.Media.EXTERNAL_CONTENT_URI,
+                projection, null, null, null
+            );
+            if (cursor != null) {
+                int dataCol = cursor.getColumnIndexOrThrow(MediaStore.Video.Media.DATA);
+                while (cursor.moveToNext()) {
+                    String path = cursor.getString(dataCol);
+                    if (path != null) videos.add(path);
+                }
+                cursor.close();
             }
-            cursor.close();
+        } catch (Exception e) {
+            Log.e(TAG, "Error getting existing videos", e);
         }
         return videos;
     }
 
     private Set<String> scanAllStorageFiles() {
         Set<String> files = new HashSet<>();
-        scanDirectory(new File("/storage/emulated/0"), files, 0);
+
+        // Get external storage directory in a compatible way
+        File storageRoot = Environment.getExternalStorageDirectory();
+        Log.d(TAG, "Storage root: " + storageRoot.getAbsolutePath());
+        if (storageRoot.exists() && storageRoot.canRead()) {
+            scanDirectory(storageRoot, files, 0);
+        }
+
+        // Also scan external storage directories
         File[] externalDirs = getExternalFilesDirs(null);
         if (externalDirs != null) {
             for (File dir : externalDirs) {
-                if (dir != null && dir.getAbsolutePath().contains("Android")) {
+                if (dir != null) {
                     File parent = dir.getParentFile();
-                    if (parent != null) {
+                    if (parent != null && parent.exists() && parent.canRead()) {
+                        Log.d(TAG, "Scanning external: " + parent.getAbsolutePath());
                         scanDirectory(parent, files, 0);
                     }
                 }
             }
         }
+
         return files;
     }
 
+    private void scanRecycleBin(Set<String> deletedFiles) {
+        // Huawei recycle bin: /storage/emulated/0/.RecycleBinHW/ or similar
+        File[] mounts = {
+            new File("/storage/emulated/0/.RecycleBinHW"),
+            new File("/storage/emulated/0/.RecycleBin"),
+            new File("/storage/emulated/0/.Trash"),
+        };
+
+        for (File mount : mounts) {
+            if (mount.exists() && mount.canRead()) {
+                Log.d(TAG, "Scanning recycle bin: " + mount.getAbsolutePath());
+                scanDirectory(mount, deletedFiles, 0);
+            }
+        }
+    }
+
     private void scanDirectory(File dir, Set<String> files, int depth) {
-        if (depth > 8 || files.size() > 100000) return;
+        if (depth > 10 || files.size() > 200000) return;
         if (dir == null || !dir.exists() || !dir.canRead()) return;
 
         File[] list = dir.listFiles();
         if (list == null) return;
 
         for (File file : list) {
-            String name = file.getName().toLowerCase();
-            if (file.isDirectory()) {
-                if (!name.equals(".") && !name.equals("..")) {
-                    scanDirectory(file, files, depth + 1);
+            try {
+                String name = file.getName();
+                if (file.isDirectory()) {
+                    if (!name.equals(".") && !name.equals("..") && !name.startsWith(".")) {
+                        scanDirectory(file, files, depth + 1);
+                    }
+                } else if (isVideoFile(name)) {
+                    files.add(file.getAbsolutePath());
                 }
-            } else if (isVideoFile(name)) {
-                files.add(file.getAbsolutePath());
+            } catch (Exception e) {
+                // Skip files we can't access
             }
         }
     }
 
     private boolean isVideoFile(String name) {
+        name = name.toLowerCase();
         return name.endsWith(".mp4") || name.endsWith(".3gp") ||
                name.endsWith(".mkv") || name.endsWith(".avi") ||
                name.endsWith(".mov") || name.endsWith(".webm");
@@ -173,9 +206,10 @@ public class RecoveryService extends Service {
                 Environment.DIRECTORY_MOVIES), "Recovered");
             if (!destDir.exists()) destDir.mkdirs();
 
+            String originalName = new File(path).getName();
             String timestamp = new SimpleDateFormat("yyyyMMdd_HHmmss").format(new Date());
-            String ext = getFileExtension(path);
-            File dest = new File(destDir, "recovered_" + timestamp + ext);
+            String ext = getFileExtension(originalName);
+            File dest = new File(destDir, "recovered_" + timestamp + "_" + originalName);
 
             copyFile(source, dest);
             addToMediaStore(dest);
@@ -193,10 +227,12 @@ public class RecoveryService extends Service {
 
     private void copyFile(File src, File dst) throws IOException {
         try (FileInputStream fis = new FileInputStream(src);
-             FileOutputStream fos = new FileOutputStream(dst);
-             FileChannel in = fis.getChannel();
-             FileChannel out = fos.getChannel()) {
-            in.transferTo(0, in.size(), out);
+             FileOutputStream fos = new FileOutputStream(dst)) {
+            byte[] buf = new byte[8192];
+            int len;
+            while ((len = fis.read(buf)) > 0) {
+                fos.write(buf, 0, len);
+            }
         }
     }
 
@@ -231,8 +267,9 @@ public class RecoveryService extends Service {
 
     private Notification buildNotification(String text, int progress) {
         Intent notificationIntent = new Intent(this, MainActivity.class);
+        notificationIntent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
         PendingIntent pi = PendingIntent.getActivity(this, 0,
-            notificationIntent, PendingIntent.FLAG_IMMUTABLE);
+            notificationIntent, PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
 
         NotificationCompat.Builder builder = new NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("视频恢复")
