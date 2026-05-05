@@ -251,6 +251,9 @@ public class RecoveryService extends Service {
         if (depth > 5 || files.size() > 1000) return;
         if (dir == null || !dir.exists() || !dir.canRead()) return;
 
+        // Skip the Recovered output directory to avoid re-processing previous recoveries
+        if (dir.getAbsolutePath().contains("/Recovered")) return;
+
         File[] list = dir.listFiles();
         if (list == null) return;
 
@@ -262,11 +265,10 @@ public class RecoveryService extends Service {
                         scanForPendingStubs(file, files, depth + 1);
                     }
                 } else if (name.contains(".pending") || name.startsWith(".pending")) {
-                    // These are pending stub files - may contain recoverable data
-                    if (isVideoFile(name) || name.endsWith(".mp4")) {
-                        files.add(file.getAbsolutePath());
-                        writeLog("Found pending stub: " + file.getAbsolutePath() + " (" + file.length() + " bytes)");
-                    }
+                    // .pending files are cloud sync stubs - SKIP THEM (they are 0 bytes)
+                    writeLog("Skipping .pending stub: " + file.getAbsolutePath());
+                } else if (isVideoFile(name)) {
+                    files.add(file.getAbsolutePath());
                 }
             } catch (Exception e) {
                 // Skip files we can't access
