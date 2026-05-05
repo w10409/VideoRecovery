@@ -91,43 +91,68 @@ public class RecoveryService extends Service {
     }
 
     private void scanForDeletedVideos() {
-        Set<String> existingVideos = null;
-        Set<String> allFiles = null;
-
         try {
-            existingVideos = getExistingVideos();
-            allFiles = scanAllStorageFiles();
+            writeLog("=== Starting proper deleted video recovery ===");
 
-            Set<String> deletedFiles = new HashSet<>(allFiles);
-            if (existingVideos != null) {
-                deletedFiles.removeAll(existingVideos);
+            // Step 1: Get existing videos from MediaStore (these are NOT deleted)
+            Set<String> existingVideos = getExistingVideos();
+            writeLog("MediaStore known videos: " + (existingVideos != null ? existingVideos.size() : 0));
+
+            // Step 2: Find candidate deleted video locations
+            // These are places where deleted/pending files might linger
+            Set<String> candidateFiles = new HashSet<>();
+            
+            // 2a. Scan recycle bin directories
+            scanRecycleBinDirectories(candidateFiles);
+            
+            // 2b. Scan .pending stub files (partially downloaded/cloud-synced files)
+            scanPendingFiles(candidateFiles);
+
+            // Step 3: Filter candidates - only keep files that are:
+            // - NOT in MediaStore (truly missing from the system)
+            // - OR are in recycle bin / pending locations
+            Set<String> trulyDeletedFiles = new HashSet<>();
+            for (String path : candidateFiles) {
+                File f = new File(path);
+                
+                // Skip if file doesn't exist or is empty
+                if (!f.exists() || f.length() == 0) {
+                    writeLog("Skipping (does not exist or empty): " + path);
+                    continue;
+                }
+                
+                // Skip if it's in MediaStore (not deleted)
+                if (existingVideos != null && existingVideos.contains(path)) {
+                    writeLog("Skipping (exists in MediaStore): " + path);
+                    continue;
+                }
+                
+                // This is a candidate for recovery
+                trulyDeletedFiles.add(path);
+                writeLog("Candidate deleted file: " + path + " (" + f.length() + " bytes)");
             }
 
-            Log.d(TAG, "All files found: " + allFiles.size() + ", Existing in MediaStore: " + (existingVideos != null ? existingVideos.size() : 0));
-            writeLog("All files found: " + allFiles.size() + ", Existing in MediaStore: " + (existingVideos != null ? existingVideos.size() : 0));
-            Log.d(TAG, "Potentially deleted videos: " + deletedFiles.size());
-            writeLog("Potentially deleted videos: " + deletedFiles.size());
+            writeLog("Truly deleted videos (candidates for recovery): " + trulyDeletedFiles.size());
 
-            // Also scan recycle bin directories
-            scanRecycleBin(deletedFiles);
-
+            // Step 4: Recover the candidates
             List<String> recoveredFiles = new ArrayList<>();
-            int total = deletedFiles.size();
+            int total = trulyDeletedFiles.size();
             int count = 0;
 
-            for (String file : deletedFiles) {
+            for (String file : trulyDeletedFiles) {
                 count++;
                 int progress = (count * 100) / Math.max(total, 1);
                 updateNotification("已恢复 " + recoveredFiles.size() + " 个文件", progress);
 
                 if (recoverFile(file)) {
                     recoveredFiles.add(file);
-                    writeLog("Recovered: " + file);
+                    writeLog("Successfully recovered: " + file);
                 }
             }
 
             saveRecoveredFiles(recoveredFiles);
             int finalCount = recoveredFiles.size();
+            writeLog("=== Recovery completed: " + finalCount + " files recovered ===");
             showCompletionNotification(finalCount);
 
         } catch (Exception e) {
@@ -189,18 +214,85 @@ public class RecoveryService extends Service {
         return files;
     }
 
-    private void scanRecycleBin(Set<String> deletedFiles) {
-        // Huawei recycle bin: /storage/emulated/0/.RecycleBinHW/ or similar
-        File[] mounts = {
+    private void scanRecycleBinDirectories(Set<String> candidateFiles) {
+        // Huawei and other Android recycle bin locations
+        File[] recycleDirs = {
             new File("/storage/emulated/0/.RecycleBinHW"),
             new File("/storage/emulated/0/.RecycleBin"),
             new File("/storage/emulated/0/.Trash"),
+            new File("/storage/emulated/0/DCIM/.RecycleBin"),
         };
 
-        for (File mount : mounts) {
-            if (mount.exists() && mount.canRead()) {
-                writeLog("Scanning recycle bin: " + mount.getAbsolutePath());
-                scanDirectory(mount, deletedFiles, 0);
+        for (File dir : recycleDirs) {
+            if (dir.exists() && dir.canRead()) {
+                writeLog("Scanning recycle bin: " + dir.getAbsolutePath());
+                scanDirectoryDeep(dir, candidateFiles, 0);
+            }
+        }
+    }
+
+    private void scanPendingFiles(Set<String> candidateFiles) {
+        // .pending files are cloud sync stubs or partially downloaded files
+        // They often exist in DCIM/Camera or Download directories
+        File[] pendingDirs = {
+            new File("/storage/emulated/0/DCIM/Camera"),
+            new File("/storage/emulated/0/Download"),
+            new File("/storage/emulated/0/Movies"),
+        };
+
+        for (File dir : pendingDirs) {
+            if (dir.exists() && dir.canRead()) {
+                scanForPendingStubs(dir, candidateFiles, 0);
+            }
+        }
+    }
+
+    private void scanForPendingStubs(File dir, Set<String> files, int depth) {
+        if (depth > 5 || files.size() > 1000) return;
+        if (dir == null || !dir.exists() || !dir.canRead()) return;
+
+        File[] list = dir.listFiles();
+        if (list == null) return;
+
+        for (File file : list) {
+            try {
+                String name = file.getName();
+                if (file.isDirectory()) {
+                    if (!name.equals(".") && !name.equals("..")) {
+                        scanForPendingStubs(file, files, depth + 1);
+                    }
+                } else if (name.contains(".pending") || name.startsWith(".pending")) {
+                    // These are pending stub files - may contain recoverable data
+                    if (isVideoFile(name) || name.endsWith(".mp4")) {
+                        files.add(file.getAbsolutePath());
+                        writeLog("Found pending stub: " + file.getAbsolutePath() + " (" + file.length() + " bytes)");
+                    }
+                }
+            } catch (Exception e) {
+                // Skip files we can't access
+            }
+        }
+    }
+
+    private void scanDirectoryDeep(File dir, Set<String> files, int depth) {
+        if (depth > 8 || files.size() > 10000) return;
+        if (dir == null || !dir.exists() || !dir.canRead()) return;
+
+        File[] list = dir.listFiles();
+        if (list == null) return;
+
+        for (File file : list) {
+            try {
+                String name = file.getName();
+                if (file.isDirectory()) {
+                    if (!name.equals(".") && !name.equals("..")) {
+                        scanDirectoryDeep(file, files, depth + 1);
+                    }
+                } else if (isVideoFile(name)) {
+                    files.add(file.getAbsolutePath());
+                }
+            } catch (Exception e) {
+                // Skip files we can't access
             }
         }
     }
